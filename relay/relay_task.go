@@ -141,63 +141,78 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (taskErr *dto.
 		return
 	}
 
+	var taskDataPtr *[]byte
+
 	defer func() {
 		// release quota
 		if info.ConsumeQuota && taskErr == nil {
+            // 检查completion_tokens是否大于0
+            shouldConsumeQuota := true
+            if taskDataPtr != nil && *taskDataPtr != nil {
+                var taskInfo relaycommon.TaskInfo
+                if err := json.Unmarshal(*taskDataPtr, &taskInfo); err == nil {
+                    // 只有当completion_tokens大于0时才扣除配额
+                    shouldConsumeQuota = taskInfo.CompletionTokens > 0
+                }
+            }
             
-			err := service.PostConsumeQuota(info, quota, 0, true)
-			if err != nil {
-				common.SysLog("error consuming token remain quota: " + err.Error())
-			}
-			if quota != 0 {
-				tokenName := c.GetString("token_name")
-				//gRatio := groupRatio
-				//if hasUserGroupRatio {
-				//	gRatio = userGroupRatio
-				//}
-				logContent := fmt.Sprintf("操作 %s", info.Action)
-				// FIXME: 临时修补，支持任务仅按次计费
-				if common.StringsContains(constant.TaskPricePatches, modelName) {
-					logContent = fmt.Sprintf("%s，按次计费", logContent)
-				} else {
-					if len(info.PriceData.OtherRatios) > 0 {
-						var contents []string
-						for key, ra := range info.PriceData.OtherRatios {
-							if 1.0 != ra {
-								contents = append(contents, fmt.Sprintf("%s: %.2f", key, ra))
+            if shouldConsumeQuota {
+				err := service.PostConsumeQuota(info, quota, 0, true)
+				if err != nil {
+					common.SysLog("error consuming token remain quota: " + err.Error())
+				}
+				if quota != 0 {
+					tokenName := c.GetString("token_name")
+					//gRatio := groupRatio
+					//if hasUserGroupRatio {
+					//	gRatio = userGroupRatio
+					//}
+					logContent := fmt.Sprintf("操作 %s", info.Action)
+					// FIXME: 临时修补，支持任务仅按次计费
+					if common.StringsContains(constant.TaskPricePatches, modelName) {
+						logContent = fmt.Sprintf("%s，按次计费", logContent)
+					} else {
+						if len(info.PriceData.OtherRatios) > 0 {
+							var contents []string
+							for key, ra := range info.PriceData.OtherRatios {
+								if 1.0 != ra {
+									contents = append(contents, fmt.Sprintf("%s: %.2f", key, ra))
+								}
+							}
+							if len(contents) > 0 {
+								logContent = fmt.Sprintf("%s, 计算参数：%s", logContent, strings.Join(contents, ", "))
 							}
 						}
-						if len(contents) > 0 {
-							logContent = fmt.Sprintf("%s, 计算参数：%s", logContent, strings.Join(contents, ", "))
-						}
 					}
+					other := make(map[string]interface{})
+					if c != nil && c.Request != nil && c.Request.URL != nil {
+						other["request_path"] = c.Request.URL.Path
+					}
+					other["model_price"] = modelPrice
+					other["group_ratio"] = groupRatio
+					if hasUserGroupRatio {
+						other["user_group_ratio"] = userGroupRatio
+					}
+					model.RecordConsumeLog(c, info.UserId, model.RecordConsumeLogParams{
+						ChannelId: info.ChannelId,
+						ModelName: modelName,
+						TokenName: tokenName,
+						Quota:     quota,
+						Content:   logContent,
+						TokenId:   info.TokenId,
+						Group:     info.UsingGroup,
+						Other:     other,
+					})
+					model.UpdateUserUsedQuotaAndRequestCount(info.UserId, quota)
+					model.UpdateChannelUsedQuota(info.ChannelId, quota)
 				}
-				other := make(map[string]interface{})
-				if c != nil && c.Request != nil && c.Request.URL != nil {
-					other["request_path"] = c.Request.URL.Path
-				}
-				other["model_price"] = modelPrice
-				other["group_ratio"] = groupRatio
-				if hasUserGroupRatio {
-					other["user_group_ratio"] = userGroupRatio
-				}
-				model.RecordConsumeLog(c, info.UserId, model.RecordConsumeLogParams{
-					ChannelId: info.ChannelId,
-					ModelName: modelName,
-					TokenName: tokenName,
-					Quota:     quota,
-					Content:   logContent,
-					TokenId:   info.TokenId,
-					Group:     info.UsingGroup,
-					Other:     other,
-				})
-				model.UpdateUserUsedQuotaAndRequestCount(info.UserId, quota)
-				model.UpdateChannelUsedQuota(info.ChannelId, quota)
-			}
+            }
 		}
 	}()
 
 	taskID, taskData, taskErr := adaptor.DoResponse(c, resp, info)
+	// 将taskData的地址赋给taskDataPtr，以便在defer函数中访问
+	taskDataPtr = &taskData
 	if taskErr != nil {
 		return
 	}
