@@ -144,14 +144,7 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (taskErr *dto.
 	defer func() {
 		// release quota
 		if info.ConsumeQuota && taskErr == nil {
-            if taskData != nil {
-				var taskInfo relaycommon.TaskInfo
-				if err := json.Unmarshal(taskData, &taskInfo); err == nil {
-					if taskInfo.CompletionTokens < 1 {
-						quota = 1
-					}
-				}
-			}
+            
 			err := service.PostConsumeQuota(info, quota, 0, true)
 			if err != nil {
 				common.SysLog("error consuming token remain quota: " + err.Error())
